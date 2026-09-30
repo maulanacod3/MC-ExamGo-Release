@@ -1020,6 +1020,146 @@ uninstall_instance() {
 }
 
 # ─────────────────────────────────────────────────────────────
+# Fitur: Update / Upgrade Binary MC-ExamGO (In-Place Rescue)
+# ─────────────────────────────────────────────────────────────
+update_instance() {
+    echo ""
+    echo -e "${BOLD}============================================================${NC}"
+    echo -e "   🔄 ${CYAN}${BOLD}UPDATE / UPGRADE BINARY INSTANCE MC-ExamGO${NC}"
+    echo -e "${BOLD}============================================================${NC}"
+
+    local svc_list=($(ls /etc/systemd/system/mc-examgo*.service /etc/systemd/system/mc-cbt*.service 2>/dev/null | xargs -n 1 basename | sed 's/\.service$//' || true))
+    if [ ${#svc_list[@]} -eq 0 ]; then
+        log_warn "Tidak ada instance MC-ExamGO yang terpasang di VPS ini."
+        return
+    fi
+
+    echo -e "${BOLD}Pilih Instance yang Ingin Di-Update / Upgrade:${NC}"
+    for i in "${!svc_list[@]}"; do
+        local sname="${svc_list[$i]}"
+        local sdir="/opt/$sname"
+        local sport="8080"
+        if [ -f "$sdir/.env" ]; then
+            sport=$(grep -E '^SERVER_PORT=' "$sdir/.env" 2>/dev/null | cut -d'=' -f2 | tr -d '"' || echo "8080")
+        fi
+        echo -e "  [${CYAN}$((i + 1))${NC}] 🎯 ${BOLD}${sname}${NC} (Dir: ${sdir}, Port: ${sport})"
+    done
+    echo -e "  [0] ↩️  Batal"
+
+    local choice="0"
+    prompt_var "Pilih nomor instance [1-${#svc_list[@]}]: " choice "0"
+    if [ "$choice" = "0" ] || [ "$choice" -lt 1 ] 2>/dev/null || [ "$choice" -gt "${#svc_list[@]}" ] 2>/dev/null; then
+        log_info "Proses update dibatalkan."
+        return
+    fi
+
+    local target_svc="${svc_list[$((choice - 1))]}"
+    local target_dir="/opt/$target_svc"
+
+    # Cari file binary pembaruan di folder lokal
+    local update_file=""
+    if [ -f "./mc-exam-go-linux-amd64" ]; then
+        update_file="./mc-exam-go-linux-amd64"
+    elif ls ./mc-exam-go-linux-* >/dev/null 2>&1; then
+        update_file=$(ls ./mc-exam-go-linux-* | head -n 1)
+    elif ls ./*.zip >/dev/null 2>&1; then
+        update_file=$(ls ./*.zip | grep -iE 'linux|amd64|examgo' | head -n 1 || true)
+    elif ls ./*.tar.gz >/dev/null 2>&1; then
+        update_file=$(ls ./*.tar.gz | head -n 1 || true)
+    fi
+
+    if [ -z "$update_file" ] || [ ! -f "$update_file" ]; then
+        prompt_var "Masukkan lokasi file binary/zip pembaruan di VPS: " update_file ""
+    fi
+
+    if [ -z "$update_file" ] || [ ! -f "$update_file" ]; then
+        log_error "Berkas pembaruan '$update_file' tidak ditemukan!"
+        return
+    fi
+
+    log_info "Menggunakan berkas update: ${BOLD}${update_file}${NC}"
+
+    local confirm=""
+    prompt_var "Lanjutkan update untuk ${target_svc}? [Y/n]: " confirm "Y"
+    confirm=$(echo "$confirm" | tr '[:upper:]' '[:lower:]')
+    if [ "$confirm" = "n" ] || [ "$confirm" = "no" ]; then
+        log_info "Pembaruan dibatalkan."
+        return
+    fi
+
+    # 1. Backup binary lama
+    log_check "Mencadangkan (backup) binary lama"
+    cp -f "$target_dir/mc-exam-go-linux" "$target_dir/mc-exam-go-linux.bak" 2>/dev/null || true
+    log_success "Binary lama dicadangkan ke $target_dir/mc-exam-go-linux.bak"
+
+    # 2. Hentikan service
+    log_check "Menghentikan service ${target_svc}.service secara aman"
+    systemctl stop "${target_svc}.service" >/dev/null 2>&1 || true
+
+    # 3. Ekstrak atau salin binary baru
+    local tmp_dir="/tmp/mc_update_$$"
+    mkdir -p "$tmp_dir"
+    if [[ "$update_file" == *.zip ]]; then
+        log_check "Mengekstrak binary dari zip"
+        unzip -q -o "$update_file" -d "$tmp_dir"
+        local extracted_bin=$(find "$tmp_dir" -type f -name "mc-exam-go-linux*" | head -n 1)
+        if [ -n "$extracted_bin" ] && [ -f "$extracted_bin" ]; then
+            cp -f "$extracted_bin" "$target_dir/mc-exam-go-linux"
+        else
+            log_error "Binary linux tidak ditemukan di dalam file zip!"
+            rm -rf "$tmp_dir"
+            systemctl start "${target_svc}.service"
+            return
+        fi
+    elif [[ "$update_file" == *.tar.gz ]]; then
+        log_check "Mengekstrak binary dari tar.gz"
+        tar -xzf "$update_file" -C "$tmp_dir"
+        local extracted_bin=$(find "$tmp_dir" -type f -name "mc-exam-go-linux*" | head -n 1)
+        if [ -n "$extracted_bin" ] && [ -f "$extracted_bin" ]; then
+            cp -f "$extracted_bin" "$target_dir/mc-exam-go-linux"
+        else
+            log_error "Binary linux tidak ditemukan di dalam file tar.gz!"
+            rm -rf "$tmp_dir"
+            systemctl start "${target_svc}.service"
+            return
+        fi
+    else
+        cp -f "$update_file" "$target_dir/mc-exam-go-linux"
+    fi
+    rm -rf "$tmp_dir"
+
+    chmod 755 "$target_dir/mc-exam-go-linux"
+    log_success "Binary baru berhasil dipasang"
+
+    # 4. Jalankan kembali service
+    log_check "Menyalakan service ${target_svc}.service"
+    systemctl daemon-reload
+    systemctl start "${target_svc}.service"
+
+    sleep 3
+    if systemctl is-active --quiet "${target_svc}.service"; then
+        log_success "Service ${target_svc}.service AKTIF dan BERJALAN NORMAL!"
+        echo ""
+        echo -e "${BOLD}============================================================${NC}"
+        echo -e "   🎉 ${GREEN}${BOLD}UPDATE INSTANCE '${target_svc}' SUKSES 100%!${NC}"
+        echo -e "${BOLD}============================================================${NC}"
+    else
+        log_error "Service ${target_svc}.service gagal berjalan! Menampilkan log error:"
+        journalctl -u "${target_svc}.service" -n 15 --no-pager
+        echo ""
+        local rb=""
+        prompt_var "Apakah ingin melakukan ROLLBACK ke binary lama? [Y/n]: " rb "Y"
+        rb=$(echo "$rb" | tr '[:upper:]' '[:lower:]')
+        if [ "$rb" != "n" ]; then
+            log_check "Mengembalikan binary cadangan (Rollback)"
+            cp -f "$target_dir/mc-exam-go-linux.bak" "$target_dir/mc-exam-go-linux"
+            systemctl start "${target_svc}.service"
+            log_success "Rollback selesai. Service dikembalikan ke versi sebelumnya."
+        fi
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────
 # Main Menu Loop
 # ─────────────────────────────────────────────────────────────
 print_banner
@@ -1041,28 +1181,30 @@ while true; do
     echo -e "                 ${CYAN}${BOLD}MENU UTAMA MC-ExamGO VPS${NC}"
     echo -e "${BOLD}============================================================${NC}"
     echo -e "  ${CYAN}[1]${NC} 🚀 Pasang / Deploy Instance Baru MC-ExamGO"
-    echo -e "  ${CYAN}[2]${NC} 🌐 Hubungkan Domain & Pasang / Perbarui SSL HTTPS"
-    echo -e "  ${CYAN}[3]${NC} 📜 Pantau Live Logs Server Real-Time (journalctl)"
-    echo -e "  ${CYAN}[4]${NC} ⚙️  Kelola Service Instance (Start / Stop / Restart / Status)"
-    echo -e "  ${CYAN}[5]${NC} 🖥️  Pasang FastPanel Control Panel (Port 8888)"
-    echo -e "  ${CYAN}[6]${NC} 🗑️  Hapus / Uninstall Instance MC-ExamGO"
-    echo -e "  ${CYAN}[7]${NC} ⚡ Auto-Tuning Hardware & Optimasi VPS (High-Concurrency)"
-    echo -e "  ${CYAN}[8]${NC} 🛡️ Security Hardening & Firewall (Tutup Open Port Database)"
+    echo -e "  ${CYAN}[2]${NC} 🔄 Update / Upgrade Binary MC-ExamGO (In-Place Rescue)"
+    echo -e "  ${CYAN}[3]${NC} 🌐 Hubungkan Domain & Pasang / Perbarui SSL HTTPS"
+    echo -e "  ${CYAN}[4]${NC} 📜 Pantau Live Logs Server Real-Time (journalctl)"
+    echo -e "  ${CYAN}[5]${NC} ⚙️  Kelola Service Instance (Start / Stop / Restart / Status)"
+    echo -e "  ${CYAN}[6]${NC} 🖥️  Pasang FastPanel Control Panel (Port 8888)"
+    echo -e "  ${CYAN}[7]${NC} 🗑️  Hapus / Uninstall Instance MC-ExamGO"
+    echo -e "  ${CYAN}[8]${NC} ⚡ Auto-Tuning Hardware & Optimasi VPS (High-Concurrency)"
+    echo -e "  ${CYAN}[9]${NC} 🛡️ Security Hardening & Firewall (Tutup Open Port Database)"
     echo -e "  ${CYAN}[0]${NC} 🚪 Keluar"
     echo -e "${BOLD}============================================================${NC}"
 
     MENU_CHOICE="1"
-    prompt_var "Pilih menu [0-8] [1]: " MENU_CHOICE "1"
+    prompt_var "Pilih menu [0-9] [1]: " MENU_CHOICE "1"
 
     case "$MENU_CHOICE" in
         1) deploy_instance ;;
-        2) connect_domain_ssl ;;
-        3) show_live_logs ;;
-        4) manage_services ;;
-        5) install_fastpanel_only ;;
-        6) uninstall_instance ;;
-        7) auto_tune_vps ;;
-        8) harden_vps_security ;;
+        2) update_instance ;;
+        3) connect_domain_ssl ;;
+        4) show_live_logs ;;
+        5) manage_services ;;
+        6) install_fastpanel_only ;;
+        7) uninstall_instance ;;
+        8) auto_tune_vps ;;
+        9) harden_vps_security ;;
         0) echo -e "${GREEN}Sampai jumpa! 👋${NC}"; exit 0 ;;
         *) log_warn "Pilihan tidak valid." ;;
     esac
