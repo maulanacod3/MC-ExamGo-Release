@@ -1,6 +1,6 @@
 # 🚀 MC-ExamGO CBT Platform — Auto-Installer & Server Management
 
-MC-ExamGO adalah Platform terpadu Computer Based Test (CBT), Learning Management System (LMS), In-Browser Coding IDE, dan 15 Instrumen Psikotes bertenaga **Golang murni & Vue 3 SPA.** Dirancang khusus untuk konkurensi ekstrem ribuan siswa serentak dengan konsumsi memori ultra-rendah dan latensi sub-milidetik.
+MC-ExamGO adalah platform Computer-Based Testing (CBT) modern, mandiri, dan berkinerja tinggi berbasis **Golang Clean Architecture** & **Vue 3 SPA**.
 
 ---
 
@@ -11,7 +11,7 @@ Jadikan smartphone atau tablet Android Anda sebagai **Server CBT Portabel Mandir
 ### 1. Perintah Instalasi 1-Baris
 Buka aplikasi **Termux** di Android, lalu tempel (*paste*) perintah berikut:
 ```bash
-pkg update -y && pkg install -y curl && curl -sSL https://raw.githubusercontent.com/maulanacod3/MC-ExamGo/main/bin/scripts/install_termux.sh | bash
+pkg update -y && pkg install -y curl && curl -sSL https://raw.githubusercontent.com/maulanacod3/MC-ExamGo-Release/main/install_termux.sh | bash
 ```
 
 ### 2. Perintah Manajemen CLI (`examgo`)
@@ -52,7 +52,7 @@ Skrip [`install_vps.sh`](file:///c:/xampp/htdocs/mc-cbt-exam-go/bin/scripts/inst
 ### 1. Perintah Instalasi 1-Baris
 Jalankan perintah ini di terminal server VPS Anda (sebagai `root` atau `sudo`):
 ```bash
-curl -sSL https://raw.githubusercontent.com/maulanacod3/MC-ExamGo/main/bin/scripts/install_vps.sh | bash
+curl -sSL https://raw.githubusercontent.com/maulanacod3/MC-ExamGo-Release/main/install_vps.sh | bash
 ```
 
 ---
@@ -109,7 +109,7 @@ Anda juga dapat menjalankan fitur optimasi dan keamanan secara langsung melalui 
 
 ## 📦 Rilis Binary Resmi & Multi-Platform
 
-Unduh paket binary yang sudah dikompilasi langsung dari tab [GitHub Releases](https://github.com/maulanacod3/MC-ExamGo/releases):
+Unduh paket binary yang sudah dikompilasi langsung dari tab [GitHub Releases MC-ExamGo-Release](https://github.com/maulanacod3/MC-ExamGo-Release/releases):
 - 🪟 **Windows x64 / x86** (`mc-exam-go-windows-amd64.exe`)
 - 🐧 **Linux Server x64** (`mc-exam-go-linux-amd64`)
 - 📱 **Linux ARM64 / Android Termux** (`mc-exam-go-linux-arm64`)
