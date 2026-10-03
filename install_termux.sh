@@ -252,10 +252,7 @@ END
         log_info "Binary lokal belum ada. Mengunduh paket resmi rilis (${bin_arch}) dari GitHub..."
         local downloaded=false
         local urls=(
-            "https://github.com/maulanacod3/MC-ExamGo-Release/releases/download/v1.3.1/MC-ExamGo-${bin_arch}-v1.3.1.zip"
-            "https://github.com/maulanacod3/MC-ExamGo-Release/releases/latest/download/MC-ExamGo-${bin_arch}-v1.3.1.zip"
-            "https://github.com/maulanacod3/MC-ExamGo-Release/releases/latest/download/mc-exam-go-linux-${bin_arch}.zip"
-            "https://cbt.mcode.web.id/examgo/unduh/${bin_arch}"
+            "https://mcode.web.id/examgo/unduh/${bin_arch}"
         )
         for dl_url in "${urls[@]}"; do
             log_info "Mencoba mengunduh dari: $dl_url"
