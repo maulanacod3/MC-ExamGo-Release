@@ -146,9 +146,9 @@ install_termux_environment() {
     fi
 
     # 1. Install dependensi Native Termux
-    log_check "Memasang paket prasyarat Termux (postgresql, curl, unzip, psmisc, openssl-tool, termux-tools)..."
+    log_check "Memasang paket prasyarat Termux (postgresql, curl, unzip, psmisc, openssl-tool, termux-tools, ca-certificates)..."
     pkg update -y
-    pkg install -y postgresql curl tar unzip psmisc openssl-tool termux-tools dnsutils || true
+    pkg install -y postgresql curl tar unzip psmisc openssl-tool termux-tools dnsutils ca-certificates || true
 
     # 1.1 Konfigurasi DNS Resolver Termux (Mencegah error 'lookup ... connection refused [::1]:53' pada AI Gateway)
     log_check "Mengonfigurasi DNS Resolver Termux (Google & Cloudflare DNS)..."
