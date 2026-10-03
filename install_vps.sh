@@ -632,7 +632,7 @@ EOF
             dl_type="arm64"
         fi
 
-        local central_url="https://cbt.mcode.web.id/examgo/unduh/${dl_type}"
+        local central_url="https://mcode.web.id/examgo/unduh/${dl_type}"
         mkdir -p /tmp/mc_exam_extracted
         if command -v wget >/dev/null 2>&1; then
             wget -qO /tmp/mc-exam-go-release.zip "$central_url" || curl -fsSL "$central_url" -o /tmp/mc-exam-go-release.zip || true
@@ -1160,6 +1160,142 @@ update_instance() {
 }
 
 # ─────────────────────────────────────────────────────────────
+# Fitur: Pasang MC-Panel (MCode Server & App Manager)
+# ─────────────────────────────────────────────────────────────
+install_mc_panel() {
+    echo ""
+    echo -e "${BOLD}============================================================${NC}"
+    echo -e "   ${CYAN}${BOLD}🎛️  PASANG MC-PANEL (MCODE SERVER & APP MANAGER)${NC}"
+    echo -e "${BOLD}============================================================${NC}"
+    echo -e "MC-Panel adalah control panel ultra-ringan (<25MB RAM) yang"
+    echo -e "dioptimalkan untuk mengelola MC-ExamGO (Go) & Website Sekolah (Laravel)."
+    echo ""
+
+    local panel_port="9090"
+    prompt_var "Port Web Panel [9090]: " panel_port "9090"
+
+    local admin_user="admin"
+    prompt_var "Username Admin Panel [admin]: " admin_user "admin"
+
+    local admin_pass=""
+    local gen_pass=$(generate_secure_password 16 2>/dev/null || echo "AdminMCode2026!")
+    prompt_var "Password Admin Panel [$gen_pass]: " admin_pass "$gen_pass"
+
+    wait_for_apt_lock
+    log_check "Menginstal dependensi dasar (Nginx, UFW, Database engines)"
+    apt-get update -y
+    apt-get install -y curl wget git unzip nginx certbot python3-certbot-nginx ufw postgresql
+
+    log_check "Menyiapkan direktori & service MC-Panel di /opt/mc-panel"
+    mkdir -p /opt/mc-panel /etc/mc-panel /var/www
+
+    curl -fsSL https://raw.githubusercontent.com/maulanacod3/mc-panel/main/scripts/install.sh | bash || true
+
+    cat << EOF > /etc/systemd/system/mc-panel.service
+[Unit]
+Description=MC-Panel Server & App Control Daemon
+After=network.target nginx.service postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/mc-panel
+ExecStart=/opt/mc-panel/mc-panel
+Restart=always
+RestartSec=5
+Environment=MC_PANEL_PORT=${panel_port}
+Environment=MC_PANEL_DB=/etc/mc-panel/mc-panel.db
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    ufw allow "${panel_port}/tcp" || true
+
+    local panel_domain=""
+    prompt_var "Hubungkan domain langsung untuk MC-Panel? (contoh: panel.sekolah.sch.id, Enter jika via IP:Port): " panel_domain ""
+
+    local access_url=""
+    local srv_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -z "$srv_ip" ] && srv_ip="IP_SERVER"
+
+    if [ -n "$panel_domain" ]; then
+        log_check "Mengonfigurasi Nginx Reverse Proxy untuk ${panel_domain}"
+        cat << EOF > "/etc/nginx/sites-available/mc_panel.conf"
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${panel_domain};
+
+    location / {
+        proxy_pass http://127.0.0.1:${panel_port};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+        ln -sf "/etc/nginx/sites-available/mc_panel.conf" "/etc/nginx/sites-enabled/mc_panel.conf"
+        nginx -t && systemctl reload nginx
+        access_url="http://${panel_domain} (atau http://${srv_ip}:${panel_port})"
+    else
+        access_url="http://${srv_ip}:${panel_port}"
+    fi
+
+    echo ""
+    echo -e "${BOLD}============================================================${NC}"
+    echo -e "   🎉 ${GREEN}${BOLD}INSTALASI MC-PANEL SELESAI & SIAP DIGUNAKAN!${NC}"
+    echo -e "${BOLD}============================================================${NC}"
+    echo -e "  URL Akses Panel : ${CYAN}${BOLD}${access_url}${NC}"
+    echo -e "  Username Admin  : ${YELLOW}${BOLD}${admin_user}${NC}"
+    echo -e "  Password Admin  : ${YELLOW}${BOLD}${admin_pass}${NC}"
+    echo -e "  Port Internal   : ${panel_port}"
+    echo -e "  Service Daemon  : systemctl status mc-panel.service"
+    echo -e "${BOLD}============================================================${NC}"
+}
+
+# ─────────────────────────────────────────────────────────────
+# Fitur: Pasang FastPanel Standalone (Port 8888)
+# ─────────────────────────────────────────────────────────────
+install_fastpanel_only() {
+    echo ""
+    echo -e "${BOLD}============================================================${NC}"
+    echo -e "   ${CYAN}${BOLD}🖥️  PASANG FASTPANEL CONTROL PANEL (PORT 8888)${NC}"
+    echo -e "${BOLD}============================================================${NC}"
+
+    local fp_pass=""
+    local gen_pass=$(generate_secure_password 16 2>/dev/null || echo "AdminFastPanel2026!")
+    prompt_var "Password Admin FastPanel [$gen_pass]: " fp_pass "$gen_pass"
+
+    wait_for_apt_lock
+    log_check "Mengunduh & menginstal FastPanel"
+    if ! command -v mogwai &> /dev/null; then
+        curl -fsSL http://repo.fastpanel.direct/install_fastpanel.sh | bash -s -- -f -o || true
+    fi
+
+    if [ -f /usr/local/bin/mogwai ]; then
+        /usr/local/bin/mogwai chpasswd -u fastuser -p "$fp_pass" 2>/dev/null || true
+    fi
+
+    local srv_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -z "$srv_ip" ] && srv_ip="IP_SERVER"
+
+    echo ""
+    echo -e "${BOLD}============================================================${NC}"
+    echo -e "   🎉 ${GREEN}${BOLD}INSTALASI FASTPANEL SELESAI!${NC}"
+    echo -e "${BOLD}============================================================${NC}"
+    echo -e "  URL Akses Panel : ${CYAN}${BOLD}https://${srv_ip}:8888${NC}"
+    echo -e "  Username        : ${YELLOW}${BOLD}fastuser${NC}"
+    echo -e "  Password        : ${YELLOW}${BOLD}${fp_pass}${NC}"
+    echo -e "${BOLD}============================================================${NC}"
+}
+
+# ─────────────────────────────────────────────────────────────
 # Main Menu Loop
 # ─────────────────────────────────────────────────────────────
 print_banner
@@ -1180,20 +1316,21 @@ while true; do
     echo -e "${BOLD}============================================================${NC}"
     echo -e "                 ${CYAN}${BOLD}MENU UTAMA MC-ExamGO VPS${NC}"
     echo -e "${BOLD}============================================================${NC}"
-    echo -e "  ${CYAN}[1]${NC} 🚀 Pasang / Deploy Instance Baru MC-ExamGO"
-    echo -e "  ${CYAN}[2]${NC} 🔄 Update / Upgrade Binary MC-ExamGO (In-Place Rescue)"
-    echo -e "  ${CYAN}[3]${NC} 🌐 Hubungkan Domain & Pasang / Perbarui SSL HTTPS"
-    echo -e "  ${CYAN}[4]${NC} 📜 Pantau Live Logs Server Real-Time (journalctl)"
-    echo -e "  ${CYAN}[5]${NC} ⚙️  Kelola Service Instance (Start / Stop / Restart / Status)"
-    echo -e "  ${CYAN}[6]${NC} 🖥️  Pasang FastPanel Control Panel (Port 8888)"
-    echo -e "  ${CYAN}[7]${NC} 🗑️  Hapus / Uninstall Instance MC-ExamGO"
-    echo -e "  ${CYAN}[8]${NC} ⚡ Auto-Tuning Hardware & Optimasi VPS (High-Concurrency)"
-    echo -e "  ${CYAN}[9]${NC} 🛡️ Security Hardening & Firewall (Tutup Open Port Database)"
-    echo -e "  ${CYAN}[0]${NC} 🚪 Keluar"
+    echo -e "  ${CYAN}[1]${NC}  🚀 Pasang / Deploy Instance Baru MC-ExamGO"
+    echo -e "  ${CYAN}[2]${NC}  🔄 Update / Upgrade Binary MC-ExamGO (In-Place Rescue)"
+    echo -e "  ${CYAN}[3]${NC}  🌐 Hubungkan Domain & Pasang / Perbarui SSL HTTPS"
+    echo -e "  ${CYAN}[4]${NC}  📜 Pantau Live Logs Server Real-Time (journalctl)"
+    echo -e "  ${CYAN}[5]${NC}  ⚙️  Kelola Service Instance (Start / Stop / Restart / Status)"
+    echo -e "  ${CYAN}[6]${NC}  🎛️  Pasang MC-Panel (Ultra-Light Server & App Manager) ⭐"
+    echo -e "  ${CYAN}[7]${NC}  🖥️  Pasang FastPanel Control Panel (Port 8888)"
+    echo -e "  ${CYAN}[8]${NC}  🗑️  Hapus / Uninstall Instance MC-ExamGO"
+    echo -e "  ${CYAN}[9]${NC}  ⚡ Auto-Tuning Hardware & Optimasi VPS (High-Concurrency)"
+    echo -e "  ${CYAN}[10]${NC} 🛡️ Security Hardening & Firewall (Tutup Open Port Database)"
+    echo -e "  ${CYAN}[0]${NC}  🚪 Keluar"
     echo -e "${BOLD}============================================================${NC}"
 
     MENU_CHOICE="1"
-    prompt_var "Pilih menu [0-9] [1]: " MENU_CHOICE "1"
+    prompt_var "Pilih menu [0-10] [1]: " MENU_CHOICE "1"
 
     case "$MENU_CHOICE" in
         1) deploy_instance ;;
@@ -1201,10 +1338,11 @@ while true; do
         3) connect_domain_ssl ;;
         4) show_live_logs ;;
         5) manage_services ;;
-        6) install_fastpanel_only ;;
-        7) uninstall_instance ;;
-        8) auto_tune_vps ;;
-        9) harden_vps_security ;;
+        6) install_mc_panel ;;
+        7) install_fastpanel_only ;;
+        8) uninstall_instance ;;
+        9) auto_tune_vps ;;
+        10) harden_vps_security ;;
         0) echo -e "${GREEN}Sampai jumpa! 👋${NC}"; exit 0 ;;
         *) log_warn "Pilihan tidak valid." ;;
     esac
