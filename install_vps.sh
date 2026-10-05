@@ -1305,19 +1305,46 @@ reset_admin_password() {
     echo ""
     log_check "Mengecek daftar akun Admin pada database '${target_db}'..."
     
-    local admin_list=$(sudo -u postgres psql -d "$target_db" -t -A -F" | " -c "SELECT id, email, name, role FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 5;" 2>/dev/null || true)
+    # Ambil semua akun admin dari database (id, email, name)
+    local raw_admins=$(sudo -u postgres psql -d "$target_db" -t -A -F"|" -c "SELECT id, email, name FROM users WHERE role = 'admin' ORDER BY id ASC;" 2>/dev/null || true)
     
-    if [ -n "$admin_list" ]; then
-        echo -e "${GRAY}Akun admin ditemukan di database:${NC}"
-        echo -e "$admin_list" | while read -r line; do
-            echo -e "  • ${YELLOW}${line}${NC}"
-        done
+    local target_id=""
+    local target_email="admin@mc-exam.go"
+    local target_name="Admin"
+
+    if [ -n "$raw_admins" ]; then
+        echo -e "${GREEN}Ditemukan akun Admin pada database '${target_db}':${NC}"
+        local admin_array=()
+        local idx=1
+        while IFS='|' read -r u_id u_email u_name; do
+            if [ -n "$u_id" ] && [ -n "$u_email" ]; then
+                echo -e "  [${CYAN}${idx}${NC}] 👤 ${BOLD}${u_name}${NC} (${YELLOW}${u_email}${NC}) [ID: ${u_id}]"
+                admin_array+=("$u_id|$u_email|$u_name")
+                idx=$((idx + 1))
+            fi
+        done <<< "$raw_admins"
+
+        if [ ${#admin_array[@]} -gt 0 ]; then
+            local adm_choice="1"
+            prompt_var "Pilih akun admin yang ingin direset [1-${#admin_array[@]}]: " adm_choice "1"
+            if [ "$adm_choice" -ge 1 ] 2>/dev/null && [ "$adm_choice" -le "${#admin_array[@]}" ] 2>/dev/null; then
+                local chosen="${admin_array[$((adm_choice - 1))]}"
+                target_id=$(echo "$chosen" | cut -d'|' -f1)
+                target_email=$(echo "$chosen" | cut -d'|' -f2)
+                target_name=$(echo "$chosen" | cut -d'|' -f3)
+            else
+                local custom_email=""
+                prompt_var "Masukkan Email Admin manual: " custom_email "$target_email"
+                [ -n "$custom_email" ] && target_email="$custom_email"
+            fi
+        fi
+    else
+        log_warn "Belum ada akun admin di database '${target_db}'."
+        prompt_var "Masukkan Email Admin yang ingin dibuat [$target_email]: " target_email "$target_email"
     fi
 
     echo ""
-    local target_email="admin@mc-exam.go"
-    prompt_var "Masukkan Email Admin yang akan direset [$target_email]: " target_email "$target_email"
-
+    echo -e "Target Akun: ${YELLOW}${BOLD}${target_email}${NC} (${target_name})"
     local gen_pass=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 10)
     local new_pass=""
     prompt_var "Masukkan Password Baru [Default: $gen_pass]: " new_pass "$gen_pass"
@@ -1331,7 +1358,20 @@ reset_admin_password() {
     log_check "Mengenkripsi dengan Bcrypt & Memperbarui Database..."
 
     # Gunakan extension pgcrypto untuk hash bcrypt yang 100% kompatibel dengan Go bcrypt
-    local update_res=$(sudo -u postgres psql -d "$target_db" -t -A <<EOF 2>&1
+    local update_res=""
+    if [ -n "$target_id" ]; then
+        update_res=$(sudo -u postgres psql -d "$target_db" -t -A <<EOF 2>&1
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+UPDATE users 
+SET password_hash = crypt('$new_pass', gen_salt('bf', 10)), 
+    email = '$target_email',
+    is_active = true,
+    updated_at = NOW() 
+WHERE id = $target_id;
+EOF
+)
+    else
+        update_res=$(sudo -u postgres psql -d "$target_db" -t -A <<EOF 2>&1
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 UPDATE users 
 SET password_hash = crypt('$new_pass', gen_salt('bf', 10)), 
@@ -1340,6 +1380,7 @@ SET password_hash = crypt('$new_pass', gen_salt('bf', 10)),
 WHERE email = '$target_email' OR (id = 1 AND role = 'admin');
 EOF
 )
+    fi
 
     if echo "$update_res" | grep -iqE "UPDATE [1-9]"; then
         log_success "Password untuk user '${target_email}' berhasil direset!"
@@ -1368,7 +1409,7 @@ EOF
     echo -e "${GREEN}${BOLD}============================================================${NC}"
     echo -e "• Instance Target : ${CYAN}${target_svc}${NC}"
     echo -e "• Database        : ${CYAN}${target_db}${NC}"
-    echo -e "• Email Admin     : ${YELLOW}${BOLD}${target_email}${NC}"
+    echo -e "• Email Login     : ${YELLOW}${BOLD}${target_email}${NC}"
     echo -e "• Password Baru   : ${GREEN}${BOLD}${new_pass}${NC}"
     echo -e "• URL Login Admin : ${CYAN}http://${srv_ip}:${port}/admin/login${NC}"
     echo -e "${GREEN}${BOLD}============================================================${NC}"
