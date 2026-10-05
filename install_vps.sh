@@ -1260,39 +1260,118 @@ EOF
 }
 
 # ─────────────────────────────────────────────────────────────
-# Fitur: Pasang FastPanel Standalone (Port 8888)
+# Menu 11: Reset Password Admin Instance MC-ExamGO
 # ─────────────────────────────────────────────────────────────
-install_fastpanel_only() {
+reset_admin_password() {
     echo ""
     echo -e "${BOLD}============================================================${NC}"
-    echo -e "   ${CYAN}${BOLD}🖥️  PASANG FASTPANEL CONTROL PANEL (PORT 8888)${NC}"
+    echo -e "   🔑 ${CYAN}${BOLD}RESET PASSWORD ADMIN INSTANCE MC-ExamGO${NC}"
     echo -e "${BOLD}============================================================${NC}"
 
-    local fp_pass=""
-    local gen_pass=$(generate_secure_password 16 2>/dev/null || echo "AdminFastPanel2026!")
-    prompt_var "Password Admin FastPanel [$gen_pass]: " fp_pass "$gen_pass"
-
-    wait_for_apt_lock
-    log_check "Mengunduh & menginstal FastPanel"
-    if ! command -v mogwai &> /dev/null; then
-        curl -fsSL http://repo.fastpanel.direct/install_fastpanel.sh | bash -s -- -f -o || true
+    local svcs=($(ls /etc/systemd/system/mc-examgo*.service /etc/systemd/system/mc-cbt*.service 2>/dev/null | xargs -n 1 basename | sed 's/\.service$//' || true))
+    if [ ${#svcs[@]} -eq 0 ]; then
+        log_warn "Tidak ada instance MC-ExamGO yang terpasang di VPS ini."
+        return
     fi
 
-    if [ -f /usr/local/bin/mogwai ]; then
-        /usr/local/bin/mogwai chpasswd -u fastuser -p "$fp_pass" 2>/dev/null || true
+    echo -e "${BOLD}Pilih Instance yang Ingin Direset Password Adminnya:${NC}"
+    local i=1
+    local svc_names=()
+    for s in "${svcs[@]}"; do
+        local inst_dir="/opt/$s"
+        local db_name="mc_examgo"
+        if [ -f "$inst_dir/.env" ]; then
+            local parsed_db=$(grep -E '^DB_NAME=' "$inst_dir/.env" | cut -d'=' -f2 | tr -d ' "' || true)
+            [ -n "$parsed_db" ] && db_name="$parsed_db"
+        fi
+        echo -e "  [${CYAN}${i}${NC}] 🎯 ${BOLD}${s}${NC} (Database: ${GREEN}${db_name}${NC}, Dir: ${inst_dir})"
+        svc_names+=("$s:$db_name:$inst_dir")
+        i=$((i + 1))
+    done
+    echo -e "  [0] ↩️  Batal"
+
+    local choice="1"
+    prompt_var "Pilih nomor instance [1-${#svc_names[@]}]: " choice "1"
+    if [ "$choice" = "0" ] || [ "$choice" -lt 1 ] 2>/dev/null || [ "$choice" -gt "${#svc_names[@]}" ] 2>/dev/null; then
+        log_info "Reset password dibatalkan."
+        return
+    fi
+
+    local selected="${svc_names[$((choice - 1))]}"
+    local target_svc=$(echo "$selected" | cut -d':' -f1)
+    local target_db=$(echo "$selected" | cut -d':' -f2)
+    local target_dir=$(echo "$selected" | cut -d':' -f3)
+
+    echo ""
+    log_check "Mengecek daftar akun Admin pada database '${target_db}'..."
+    
+    local admin_list=$(sudo -u postgres psql -d "$target_db" -t -A -F" | " -c "SELECT id, email, name, role FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 5;" 2>/dev/null || true)
+    
+    if [ -n "$admin_list" ]; then
+        echo -e "${GRAY}Akun admin ditemukan di database:${NC}"
+        echo -e "$admin_list" | while read -r line; do
+            echo -e "  • ${YELLOW}${line}${NC}"
+        done
+    fi
+
+    echo ""
+    local target_email="admin@mc-exam.go"
+    prompt_var "Masukkan Email Admin yang akan direset [$target_email]: " target_email "$target_email"
+
+    local gen_pass=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 10)
+    local new_pass=""
+    prompt_var "Masukkan Password Baru [Default: $gen_pass]: " new_pass "$gen_pass"
+
+    if [ -z "$new_pass" ]; then
+        log_error "Password baru tidak boleh kosong!"
+        return
+    fi
+
+    echo ""
+    log_check "Mengenkripsi dengan Bcrypt & Memperbarui Database..."
+
+    # Gunakan extension pgcrypto untuk hash bcrypt yang 100% kompatibel dengan Go bcrypt
+    local update_res=$(sudo -u postgres psql -d "$target_db" -t -A <<EOF 2>&1
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+UPDATE users 
+SET password_hash = crypt('$new_pass', gen_salt('bf', 10)), 
+    is_active = true,
+    updated_at = NOW() 
+WHERE email = '$target_email' OR (id = 1 AND role = 'admin');
+EOF
+)
+
+    if echo "$update_res" | grep -iqE "UPDATE [1-9]"; then
+        log_success "Password untuk user '${target_email}' berhasil direset!"
+    else
+        log_warn "User '${target_email}' tidak ditemukan. Membuat akun admin baru..."
+        sudo -u postgres psql -d "$target_db" <<EOF >/dev/null 2>&1
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+INSERT INTO users (name, email, password_hash, role, is_active, created_at, updated_at)
+VALUES ('Admin Utama', '$target_email', crypt('$new_pass', gen_salt('bf', 10)), 'admin', true, NOW(), NOW())
+ON CONFLICT (email) DO UPDATE 
+SET password_hash = crypt('$new_pass', gen_salt('bf', 10)), is_active = true, updated_at = NOW();
+EOF
+        log_success "Akun admin '${target_email}' berhasil dibuat & diaktifkan!"
     fi
 
     local srv_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-    [ -z "$srv_ip" ] && srv_ip="IP_SERVER"
+    [ -z "$srv_ip" ] && srv_ip="127.0.0.1"
+    local port="8080"
+    if [ -f "$target_dir/.env" ]; then
+        port=$(grep -E '^SERVER_PORT=' "$target_dir/.env" | cut -d'=' -f2 | tr -d ' "' || echo "8080")
+    fi
 
     echo ""
-    echo -e "${BOLD}============================================================${NC}"
-    echo -e "   🎉 ${GREEN}${BOLD}INSTALASI FASTPANEL SELESAI!${NC}"
-    echo -e "${BOLD}============================================================${NC}"
-    echo -e "  URL Akses Panel : ${CYAN}${BOLD}https://${srv_ip}:8888${NC}"
-    echo -e "  Username        : ${YELLOW}${BOLD}fastuser${NC}"
-    echo -e "  Password        : ${YELLOW}${BOLD}${fp_pass}${NC}"
-    echo -e "${BOLD}============================================================${NC}"
+    echo -e "${GREEN}${BOLD}============================================================${NC}"
+    echo -e "   🎉 ${GREEN}${BOLD}RESET PASSWORD ADMIN BERHASIL!${NC}"
+    echo -e "${GREEN}${BOLD}============================================================${NC}"
+    echo -e "• Instance Target : ${CYAN}${target_svc}${NC}"
+    echo -e "• Database        : ${CYAN}${target_db}${NC}"
+    echo -e "• Email Admin     : ${YELLOW}${BOLD}${target_email}${NC}"
+    echo -e "• Password Baru   : ${GREEN}${BOLD}${new_pass}${NC}"
+    echo -e "• URL Login Admin : ${CYAN}http://${srv_ip}:${port}/admin/login${NC}"
+    echo -e "${GREEN}${BOLD}============================================================${NC}"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -1300,7 +1379,7 @@ install_fastpanel_only() {
 # ─────────────────────────────────────────────────────────────
 print_banner
 
-# Mendukung eksekusi langsung via CLI: ./install_vps.sh --tune atau --harden
+# Mendukung eksekusi langsung via CLI: ./install_vps.sh --tune, --harden, atau --reset-password
 if [ "${1:-}" = "tune" ] || [ "${1:-}" = "--tune" ] || [ "${1:-}" = "-t" ]; then
     print_banner
     auto_tune_vps
@@ -1308,6 +1387,10 @@ if [ "${1:-}" = "tune" ] || [ "${1:-}" = "--tune" ] || [ "${1:-}" = "-t" ]; then
 elif [ "${1:-}" = "harden" ] || [ "${1:-}" = "--harden" ] || [ "${1:-}" = "--security" ] || [ "${1:-}" = "-s" ]; then
     print_banner
     harden_vps_security
+    exit 0
+elif [ "${1:-}" = "reset-password" ] || [ "${1:-}" = "--reset-password" ] || [ "${1:-}" = "reset-admin" ] || [ "${1:-}" = "-p" ]; then
+    print_banner
+    reset_admin_password
     exit 0
 fi
 
@@ -1326,11 +1409,12 @@ while true; do
     echo -e "  ${CYAN}[8]${NC}  🗑️  Hapus / Uninstall Instance MC-ExamGO"
     echo -e "  ${CYAN}[9]${NC}  ⚡ Auto-Tuning Hardware & Optimasi VPS (High-Concurrency)"
     echo -e "  ${CYAN}[10]${NC} 🛡️ Security Hardening & Firewall (Tutup Open Port Database)"
+    echo -e "  ${CYAN}[11]${NC} 🔑 Reset Password Admin Instance"
     echo -e "  ${CYAN}[0]${NC}  🚪 Keluar"
     echo -e "${BOLD}============================================================${NC}"
 
     MENU_CHOICE="1"
-    prompt_var "Pilih menu [0-10] [1]: " MENU_CHOICE "1"
+    prompt_var "Pilih menu [0-11] [1]: " MENU_CHOICE "1"
 
     case "$MENU_CHOICE" in
         1) deploy_instance ;;
@@ -1343,6 +1427,7 @@ while true; do
         8) uninstall_instance ;;
         9) auto_tune_vps ;;
         10) harden_vps_security ;;
+        11) reset_admin_password ;;
         0) echo -e "${GREEN}Sampai jumpa! 👋${NC}"; exit 0 ;;
         *) log_warn "Pilihan tidak valid." ;;
     esac
