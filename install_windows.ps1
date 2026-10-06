@@ -55,6 +55,82 @@ function New-CryptoJwtSecret {
     return $b64.Replace('+', '-').Replace('/', '_').TrimEnd('=').Substring(0, 64)
 }
 
+# ── Helper Enterprise Progress Runner ────────────────────────────────────────
+function Invoke-EnterpriseCommandWithProgress {
+    param (
+        [string]$Title,
+        [string]$Command,
+        [string]$Arguments
+    )
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Command
+    $psi.Arguments = $Arguments
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $started = $proc.Start()
+    } catch {
+        return -1
+    }
+
+    if (-not $started) {
+        return -1
+    }
+
+    $spinChars = @('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
+    $step = 0
+    $subTexts = @(
+        "Menghubungkan ke repositori paket...",
+        "Mengunduh installer PostgreSQL (±350MB)...",
+        "Mengekstrak dan memverifikasi berkas installer...",
+        "Memasang PostgreSQL database engine...",
+        "Menginisialisasi cluster database port 5432...",
+        "Mengonfigurasi superuser postgres...",
+        "Mendaftarkan dan menjalankan Windows Service..."
+    )
+
+    while (-not $proc.HasExited) {
+        $elapsed = $stopwatch.Elapsed
+        $elapsedStr = "{0:D2}:{1:D2}" -f [int]$elapsed.TotalMinutes, $elapsed.Seconds
+        $spinner = $spinChars[$step % $spinChars.Length]
+        $stageIndex = [Math]::Min([int]($elapsed.TotalSeconds / 15), $subTexts.Length - 1)
+        $currentStage = $subTexts[$stageIndex]
+
+        $statusMsg = " $spinner [⏱️ $elapsedStr] $Title : $currentStage"
+        
+        $winWidth = if ($Host.UI.RawUI.WindowSize.Width) { $Host.UI.RawUI.WindowSize.Width } else { 80 }
+        $maxLen = [Math]::Max(10, $winWidth - 1)
+        if ($statusMsg.Length -gt $maxLen) {
+            $statusMsg = $statusMsg.Substring(0, $maxLen - 3) + "..."
+        }
+        $statusMsg = $statusMsg.PadRight($maxLen)
+
+        Write-Host "`r$statusMsg" -NoNewline -ForegroundColor Cyan
+        Start-Sleep -Milliseconds 150
+        $step++
+    }
+
+    $stopwatch.Stop()
+    $exitCode = $proc.ExitCode
+    $winWidth = if ($Host.UI.RawUI.WindowSize.Width) { $Host.UI.RawUI.WindowSize.Width } else { 80 }
+    $clearLine = "".PadRight([Math]::Max(10, $winWidth - 1))
+    Write-Host "`r$clearLine`r" -NoNewline
+
+    $totalTimeStr = "{0}m {1}s" -f [int]$stopwatch.Elapsed.TotalMinutes, $stopwatch.Elapsed.Seconds
+    return @{
+        ExitCode = $exitCode
+        Duration = $totalTimeStr
+    }
+}
+
 # ── Deteksi / Pasang PostgreSQL di Windows ─────────────────────────────────────
 function Ensure-PostgreSQL {
     Write-Info "Memeriksa instalasi PostgreSQL di komputer..."
@@ -82,23 +158,26 @@ function Ensure-PostgreSQL {
         if ([string]::IsNullOrWhiteSpace($initialPass)) { $initialPass = "postgres" }
         $script:INITIAL_DB_PASS = $initialPass
 
-        Write-Info "Mengunduh dan menginstal PostgreSQL 16 via Windows Package Manager (winget)..."
+        Write-Info "Memulai instalasi otomatis PostgreSQL 16..."
         Write-Info "Password superuser 'postgres' akan otomatis diatur: $initialPass"
+        Write-Warn "Proses mengunduh ±350MB dan menginstal engine (estimasi 1-3 menit tergantung kecepatan internet)..."
 
         $overrideArgs = "--unattendedmodeui none --mode unattended --superpassword `"$initialPass`" --serverport 5432"
+        $wingetArgs = "install --id PostgreSQL.PostgreSQL.16 -s winget -e --accept-package-agreements --accept-source-agreements --override `"$overrideArgs`""
 
-        & winget install --id PostgreSQL.PostgreSQL.16 -s winget -e --accept-package-agreements --accept-source-agreements --override $overrideArgs
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "PostgreSQL 16 berhasil dipasang dengan password: $initialPass"
+        $res = Invoke-EnterpriseCommandWithProgress -Title "Instalasi PostgreSQL 16" -Command "winget" -Arguments $wingetArgs
+        if ($res.ExitCode -eq 0) {
+            Write-Success "PostgreSQL 16 berhasil dipasang dalam waktu $($res.Duration) dengan password: $initialPass"
             Start-Sleep -Seconds 2
             return $true
         }
 
         # Fallback coba ID PostgreSQL general
         Write-Info "Mencoba paket alternatif PostgreSQL..."
-        & winget install --id PostgreSQL.PostgreSQL -s winget -e --accept-package-agreements --accept-source-agreements --override $overrideArgs
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "PostgreSQL berhasil dipasang dengan password: $initialPass"
+        $wingetAltArgs = "install --id PostgreSQL.PostgreSQL -s winget -e --accept-package-agreements --accept-source-agreements --override `"$overrideArgs`""
+        $resAlt = Invoke-EnterpriseCommandWithProgress -Title "Instalasi PostgreSQL" -Command "winget" -Arguments $wingetAltArgs
+        if ($resAlt.ExitCode -eq 0) {
+            Write-Success "PostgreSQL berhasil dipasang dalam waktu $($resAlt.Duration) dengan password: $initialPass"
             Start-Sleep -Seconds 2
             return $true
         }
