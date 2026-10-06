@@ -1189,7 +1189,7 @@ install_mc_panel() {
     log_check "Menyiapkan direktori & service MC-Panel di /opt/mc-panel"
     mkdir -p /opt/mc-panel /etc/mc-panel /var/www
 
-    curl -fsSL https://raw.githubusercontent.com/maulanacod3/mc-panel/main/scripts/install.sh | bash || true
+    curl -fsSL https://raw.githubusercontent.com/maulanacod3/MC-Panel-Relase/main/install.sh | bash || true
 
     cat << EOF > /etc/systemd/system/mc-panel.service
 [Unit]
