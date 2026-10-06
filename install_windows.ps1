@@ -190,6 +190,94 @@ function Ensure-PostgreSQL {
     return $false
 }
 
+# ── Penyelarasan Kredensial & Pembuatan Database PostgreSQL ────────────────────
+function Set-PostgreSqlPasswordAndDatabase {
+    param (
+        [string]$NewPassword,
+        [string]$DbName = "mc_examgo",
+        [string]$DbHost = "127.0.0.1",
+        [string]$DbPort = "5432",
+        [string]$DbUser = "postgres"
+    )
+
+    Write-Info "Menyelaraskan kredensial database PostgreSQL..."
+
+    $hbaFiles = Get-ChildItem -Path "C:\Program Files\PostgreSQL\*\data\pg_hba.conf" -ErrorAction SilentlyContinue
+    if (-not $hbaFiles) {
+        # Coba cara direct psql jika pg_hba.conf tidak di lokasi default
+        $psqlExe = Get-Command "psql.exe" -ErrorAction SilentlyContinue
+        if (-not $psqlExe) {
+            $stdPsql = Get-ChildItem -Path "C:\Program Files\PostgreSQL\*\bin\psql.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($stdPsql) { $psqlExe = $stdPsql.FullName }
+        } else {
+            $psqlExe = $psqlExe.Source
+        }
+        if ($psqlExe) {
+            $env:PGPASSWORD = $NewPassword
+            & $psqlExe -h $DbHost -p $DbPort -U $DbUser -d postgres -c "CREATE DATABASE $DbName;" 2>$null
+            $env:PGPASSWORD = $null
+        }
+        return $true
+    }
+
+    $hbaFile = $hbaFiles[0].FullName
+    
+    try {
+        # 1. Simpan backup konfigurasi pg_hba.conf
+        $backupHba = "$hbaFile.bak"
+        if (-not (Test-Path $backupHba)) {
+            Copy-Item -Path $hbaFile -Destination $backupHba -Force
+        }
+
+        # 2. Ubah sementara auth mode lokal ke 'trust' untuk mengizinkan reset password
+        $hbaRaw = Get-Content -Path $hbaFile -Raw
+        $trustRaw = [System.Text.RegularExpressions.Regex]::Replace(
+            $hbaRaw,
+            '(?m)^(\s*host\s+all\s+all\s+(?:127\.0\.0\.1/32|::1/128)\s+)\S+',
+            '${1}trust'
+        )
+        Set-Content -Path $hbaFile -Value $trustRaw -Encoding ASCII
+
+        # 3. Reload service PostgreSQL
+        Restart-Service -Name "postgresql*" -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+
+        # 4. Temukan psql.exe
+        $psqlExe = Get-Command "psql.exe" -ErrorAction SilentlyContinue
+        if (-not $psqlExe) {
+            $stdPsql = Get-ChildItem -Path "C:\Program Files\PostgreSQL\*\bin\psql.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($stdPsql) { $psqlExe = $stdPsql.FullName }
+        } else {
+            $psqlExe = $psqlExe.Source
+        }
+
+        if ($psqlExe) {
+            # Jalankan ALTER USER untuk update password & CREATE DATABASE
+            $escapedPass = $NewPassword.Replace("'", "''")
+            & $psqlExe -h $DbHost -p $DbPort -U $DbUser -d postgres -c "ALTER USER $DbUser WITH PASSWORD '$escapedPass';" 2>$null
+            & $psqlExe -h $DbHost -p $DbPort -U $DbUser -d postgres -c "CREATE DATABASE $DbName;" 2>$null
+        }
+
+        # 5. Kembalikan pg_hba.conf ke mode aman (scram-sha-256)
+        $secureRaw = [System.Text.RegularExpressions.Regex]::Replace(
+            $trustRaw,
+            '(?m)^(\s*host\s+all\s+all\s+(?:127\.0\.0\.1/32|::1/128)\s+)trust',
+            '${1}scram-sha-256'
+        )
+        Set-Content -Path $hbaFile -Value $secureRaw -Encoding ASCII
+
+        # 6. Restart service agar mode aman kembali aktif
+        Restart-Service -Name "postgresql*" -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+
+        Write-Success "Kredensial superuser '$DbUser' & Database '$DbName' berhasil disinkronkan 100%!"
+        return $true
+    } catch {
+        Write-Warn "Penyelarasan otomatis selesai dengan catatan: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 # ── Buat Database PostgreSQL Lokal ───────────────────────────────────────────
 function Setup-Database {
     Write-Host "`n--- Konfigurasi Database PostgreSQL ---" -ForegroundColor Yellow
@@ -209,22 +297,8 @@ function Setup-Database {
     $dbPass = Read-Host "DB Password [default: $defaultPass]"
     if ([string]::IsNullOrWhiteSpace($dbPass)) { $dbPass = $defaultPass }
 
-    # Otomatis buat database jika tool psql ditemukan di PATH atau Program Files
-    $psqlExe = Get-Command "psql.exe" -ErrorAction SilentlyContinue
-    if (-not $psqlExe) {
-        $stdPsql = Get-ChildItem -Path "C:\Program Files\PostgreSQL\*\bin\psql.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($stdPsql) { $psqlExe = $stdPsql.FullName }
-    } else {
-        $psqlExe = $psqlExe.Source
-    }
-
-    if ($psqlExe) {
-        Write-Info "Memeriksa dan menyiapkan database '$dbName' di PostgreSQL..."
-        $env:PGPASSWORD = $dbPass
-        & $psqlExe -h $dbHost -p $dbPort -U $dbUser -d postgres -c "CREATE DATABASE $dbName;" 2>$null
-        $env:PGPASSWORD = $null
-        Write-Success "Database '$dbName' siap digunakan!"
-    }
+    # Terapkan sinkronisasi password dan database otomatis
+    $null = Set-PostgreSqlPasswordAndDatabase -NewPassword $dbPass -DbName $dbName -DbHost $dbHost -DbPort $dbPort -DbUser $dbUser
 
     return @{
         Host = $dbHost
@@ -371,6 +445,7 @@ function Show-Menu {
     Write-Host " [3] 🔑 Generate Ulang Dual JWT Secret & .env Baru" -ForegroundColor Yellow
     Write-Host " [4] 🖥️  Buat Ulang Shortcut di Desktop Proktor" -ForegroundColor Magenta
     Write-Host " [5] ▶️  Jalankan Server MC-ExamGO Sekarang" -ForegroundColor White
+    Write-Host " [6] 🛠️  Selaraskan / Reset Password PostgreSQL & Database" -ForegroundColor Cyan
     Write-Host " [0] 🚪 Keluar" -ForegroundColor DarkGray
     Write-Host ""
 }
@@ -378,7 +453,7 @@ function Show-Menu {
 # ── Main Loop ────────────────────────────────────────────────────────────────
 do {
     Show-Menu
-    $choice = Read-Host "Masukkan pilihan [0-5]"
+    $choice = Read-Host "Masukkan pilihan [0-6]"
     switch ($choice) {
         "1" {
             Install-MCExamGo
@@ -435,6 +510,27 @@ JWT_STUDENT_SECRET=$jwtSiswa
                 Start-Process "http://localhost:$DEFAULT_PORT"
             } else {
                 Write-ErrorMsg "Launcher belum dibuat. Jalankan menu [1] dahulu."
+            }
+            pause
+        }
+        "6" {
+            Write-Host "`n--- Selaraskan / Reset Password Superuser PostgreSQL ---" -ForegroundColor Yellow
+            $newPass = Read-Host "Masukkan Password Baru yang diinginkan [default: ManKbu2026]"
+            if ([string]::IsNullOrWhiteSpace($newPass)) { $newPass = "ManKbu2026" }
+            $dbName = Read-Host "Nama Database [default: mc_examgo]"
+            if ([string]::IsNullOrWhiteSpace($dbName)) { $dbName = "mc_examgo" }
+
+            $res = Set-PostgreSqlPasswordAndDatabase -NewPassword $newPass -DbName $dbName
+            if ($res) {
+                # Update juga .env jika file ada
+                $envFile = Join-Path $INSTALL_DIR ".env"
+                if (Test-Path $envFile) {
+                    $envRaw = Get-Content -Path $envFile -Raw
+                    $envRaw = [System.Text.RegularExpressions.Regex]::Replace($envRaw, '(?m)^DB_PASS=.*$', "DB_PASS=$newPass")
+                    $envRaw = [System.Text.RegularExpressions.Regex]::Replace($envRaw, '(?m)^DB_PASSWORD=.*$', "DB_PASSWORD=$newPass")
+                    Set-Content -Path $envFile -Value $envRaw -Encoding UTF8
+                    Write-Success "Berkas $envFile juga otomatis diperbarui dengan password baru!"
+                }
             }
             pause
         }
