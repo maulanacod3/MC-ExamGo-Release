@@ -78,24 +78,32 @@ function Ensure-PostgreSQL {
     Write-Warn "PostgreSQL belum terdeteksi di Windows Anda."
     $choice = Read-Host "Apakah Anda ingin memasang PostgreSQL otomatis via winget? (Y/N)"
     if ($choice -match '^[yY]') {
-        Write-Info "Mengunduh dan menginstal PostgreSQL via Windows Package Manager (winget)..."
-        
-        # Coba pasang menggunakan source resmi winget
-        & winget install --id PostgreSQL.PostgreSQL -s winget -e --accept-package-agreements --accept-source-agreements
+        $initialPass = Read-Host "Tentukan Password admin/postgres yang diinginkan [default: postgres]"
+        if ([string]::IsNullOrWhiteSpace($initialPass)) { $initialPass = "postgres" }
+        $script:INITIAL_DB_PASS = $initialPass
+
+        Write-Info "Mengunduh dan menginstal PostgreSQL 16 via Windows Package Manager (winget)..."
+        Write-Info "Password superuser 'postgres' akan otomatis diatur: $initialPass"
+
+        $overrideArgs = "--unattendedmodeui none --mode unattended --superpassword `"$initialPass`" --serverport 5432"
+
+        & winget install --id PostgreSQL.PostgreSQL.16 -s winget -e --accept-package-agreements --accept-source-agreements --override $overrideArgs
         if ($LASTEXITCODE -eq 0) {
-            Write-Success "PostgreSQL berhasil dipasang! Silakan ikuti instruksi password admin postgres jika jendela wizard muncul."
+            Write-Success "PostgreSQL 16 berhasil dipasang dengan password: $initialPass"
+            Start-Sleep -Seconds 2
             return $true
         }
 
-        # Fallback coba ID PostgreSQL 16
-        Write-Info "Mencoba paket alternatif PostgreSQL 16..."
-        & winget install --id PostgreSQL.PostgreSQL.16 -s winget -e --accept-package-agreements --accept-source-agreements
+        # Fallback coba ID PostgreSQL general
+        Write-Info "Mencoba paket alternatif PostgreSQL..."
+        & winget install --id PostgreSQL.PostgreSQL -s winget -e --accept-package-agreements --accept-source-agreements --override $overrideArgs
         if ($LASTEXITCODE -eq 0) {
-            Write-Success "PostgreSQL 16 berhasil dipasang!"
+            Write-Success "PostgreSQL berhasil dipasang dengan password: $initialPass"
+            Start-Sleep -Seconds 2
             return $true
         }
 
-        Write-Warn "Gagal memasang otomatis via winget (paket tidak ditemukan atau winget belum siap)."
+        Write-Warn "Gagal memasang otomatis via winget."
         Write-Info "Silakan unduh & pasang PostgreSQL secara manual melalui tautan resmi:"
         Write-Host " 👉 https://www.postgresql.org/download/windows/`n" -ForegroundColor Cyan
         return $false
@@ -118,7 +126,26 @@ function Setup-Database {
     $dbUser = Read-Host "DB User [default: postgres]"
     if ([string]::IsNullOrWhiteSpace($dbUser)) { $dbUser = "postgres" }
 
-    $dbPass = Read-Host "DB Password"
+    $defaultPass = if ($script:INITIAL_DB_PASS) { $script:INITIAL_DB_PASS } else { "postgres" }
+    $dbPass = Read-Host "DB Password [default: $defaultPass]"
+    if ([string]::IsNullOrWhiteSpace($dbPass)) { $dbPass = $defaultPass }
+
+    # Otomatis buat database jika tool psql ditemukan di PATH atau Program Files
+    $psqlExe = Get-Command "psql.exe" -ErrorAction SilentlyContinue
+    if (-not $psqlExe) {
+        $stdPsql = Get-ChildItem -Path "C:\Program Files\PostgreSQL\*\bin\psql.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($stdPsql) { $psqlExe = $stdPsql.FullName }
+    } else {
+        $psqlExe = $psqlExe.Source
+    }
+
+    if ($psqlExe) {
+        Write-Info "Memeriksa dan menyiapkan database '$dbName' di PostgreSQL..."
+        $env:PGPASSWORD = $dbPass
+        & $psqlExe -h $dbHost -p $dbPort -U $dbUser -d postgres -c "CREATE DATABASE $dbName;" 2>$null
+        $env:PGPASSWORD = $null
+        Write-Success "Database '$dbName' siap digunakan!"
+    }
 
     return @{
         Host = $dbHost
