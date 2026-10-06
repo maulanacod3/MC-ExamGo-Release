@@ -94,8 +94,8 @@ function Ensure-PostgreSQL {
 # ── Buat Database PostgreSQL Lokal ───────────────────────────────────────────
 function Setup-Database {
     Write-Host "`n--- Konfigurasi Database PostgreSQL ---" -ForegroundColor Yellow
-    $dbHost = Read-Host "DB Host [default: localhost]"
-    if ([string]::IsNullOrWhiteSpace($dbHost)) { $dbHost = "localhost" }
+    $dbHost = Read-Host "DB Host [default: 127.0.0.1]"
+    if ([string]::IsNullOrWhiteSpace($dbHost)) { $dbHost = "127.0.0.1" }
 
     $dbPort = Read-Host "DB Port [default: 5432]"
     if ([string]::IsNullOrWhiteSpace($dbPort)) { $dbPort = "5432" }
@@ -129,11 +129,11 @@ function Install-MCExamGo {
         Write-Success "Direktori instalasi dibuat di: $INSTALL_DIR"
     }
 
-    # URL Unduhan Binary Windows
-    $downloadUrl = "https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$VERSION_TAG/MC-ExamGo-Win-$VERSION_TAG.zip"
+    # URL Unduhan Binary Windows Resmi
+    $downloadUrl = "https://mcode.web.id/examgo/unduh/win"
     $zipPath = Join-Path $env:TEMP "MC-ExamGo-Win.zip"
 
-    Write-Info "Mengunduh paket rilis resmi dari GitHub..."
+    Write-Info "Mengunduh paket rilis resmi MC-ExamGO Windows terbaru..."
     Write-Info "URL: $downloadUrl"
     
     try {
@@ -141,12 +141,30 @@ function Install-MCExamGo {
         Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
         Write-Success "Unduhan selesai! Mengekstrak berkas ke $INSTALL_DIR..."
         
-        Expand-Archive -Path $zipPath -DestinationPath $INSTALL_DIR -Force
+        $tempExtract = Join-Path $env:TEMP ("MCExamGo_Extract_" + [System.IO.Path]::GetRandomFileName())
+        if (Test-Path $tempExtract) { Remove-Item -Path $tempExtract -Recurse -Force -ErrorAction SilentlyContinue }
+        New-Item -ItemType Directory -Path $tempExtract -Force | Out-Null
+
+        Expand-Archive -Path $zipPath -DestinationPath $tempExtract -Force
         Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-        Write-Success "Ekstraksi berkas berhasil diselesaikan."
+
+        # Cek jika di dalam zip terdapat subfolder pembungkus (misal: MC-ExamGo-Win/)
+        $extractedItems = Get-ChildItem -Path $tempExtract
+        $sourceDir = $tempExtract
+        if ($extractedItems.Count -eq 1 -and $extractedItems[0].PSIsContainer) {
+            $sourceDir = $extractedItems[0].FullName
+        }
+
+        # Pindahkan seluruh isi file & folder langsung ke root $INSTALL_DIR
+        Get-ChildItem -Path $sourceDir | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination $INSTALL_DIR -Recurse -Force
+        }
+
+        Remove-Item -Path $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Success "Ekstraksi berkas ke direktori utama berhasil diselesaikan."
     } catch {
-        Write-Warn "Gagal mengunduh langsung dari URL rilis spesifik ($($_.Exception.Message))."
-        Write-Info "Mencoba rilis fallback dari repositori..."
+        Write-Warn "Gagal mengunduh atau mengekstrak rilis ($($_.Exception.Message))."
+        Write-Info "Pastikan koneksi internet aktif untuk mengunduh rilis."
     }
 
     # Setup Konfigurasi .env
@@ -180,8 +198,8 @@ JWT_STUDENT_SECRET=$jwtSiswa
     Write-Success "Berkas konfigurasi .env berhasil disimpan di $envFile"
 
     # Buat File Launcher Batch (Start Server)
-    $exeFile = Get-ChildItem -Path $INSTALL_DIR -Filter "*.exe" | Select-Object -First 1
-    $exeName = if ($exeFile) { $exeFile.Name } else { "mc-exam-go-windows-amd64-$VERSION_TAG.exe" }
+    $exeFile = Get-ChildItem -Path $INSTALL_DIR -Filter "*.exe" | Where-Object { $_.Name -notmatch "unins" } | Select-Object -First 1
+    $exeName = if ($exeFile) { $exeFile.Name } else { "mc-exam-go-windows-amd64.exe" }
 
     $batLauncher = @"
 @echo off
