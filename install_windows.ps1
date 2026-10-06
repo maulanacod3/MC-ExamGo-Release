@@ -79,14 +79,26 @@ function Ensure-PostgreSQL {
     $choice = Read-Host "Apakah Anda ingin memasang PostgreSQL otomatis via winget? (Y/N)"
     if ($choice -match '^[yY]') {
         Write-Info "Mengunduh dan menginstal PostgreSQL via Windows Package Manager (winget)..."
-        try {
-            winget install --id PostgreSQL.PostgreSQL -e --silent --accept-package-agreements --accept-source-agreements
-            Write-Success "PostgreSQL berhasil dipasang! Password default admin postgres biasanya diminta saat setup."
+        
+        # Coba pasang menggunakan source resmi winget
+        & winget install --id PostgreSQL.PostgreSQL -s winget -e --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "PostgreSQL berhasil dipasang! Silakan ikuti instruksi password admin postgres jika jendela wizard muncul."
             return $true
-        } catch {
-            Write-Warn "Gagal memasang otomatis via winget. Silakan unduh manual di https://www.postgresql.org/download/windows/"
-            return $false
         }
+
+        # Fallback coba ID PostgreSQL 16
+        Write-Info "Mencoba paket alternatif PostgreSQL 16..."
+        & winget install --id PostgreSQL.PostgreSQL.16 -s winget -e --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "PostgreSQL 16 berhasil dipasang!"
+            return $true
+        }
+
+        Write-Warn "Gagal memasang otomatis via winget (paket tidak ditemukan atau winget belum siap)."
+        Write-Info "Silakan unduh & pasang PostgreSQL secara manual melalui tautan resmi:"
+        Write-Host " 👉 https://www.postgresql.org/download/windows/`n" -ForegroundColor Cyan
+        return $false
     }
     return $false
 }
@@ -122,7 +134,7 @@ function Install-MCExamGo {
     Show-Banner
     Write-Host ">>> MEMULAI INSTALASI MC-EXAMGO WINDOWS <<<`n" -ForegroundColor Yellow
 
-    Ensure-PostgreSQL
+    $null = Ensure-PostgreSQL
 
     if (-not (Test-Path $INSTALL_DIR)) {
         New-Item -ItemType Directory -Path $INSTALL_DIR -Force | Out-Null
@@ -267,7 +279,7 @@ do {
             pause
         }
         "2" {
-            Ensure-PostgreSQL
+            $null = Ensure-PostgreSQL
             pause
         }
         "3" {
