@@ -563,19 +563,20 @@ deploy_instance() {
     if [ "$install_mode" = "2" ]; then
         echo ""
         log_check "Memeriksa / Memasang FastPanel Web Control Panel di VPS"
-        if command -v mogwai >/dev/null 2>&1 || [ -f "/usr/local/fastpanel2/fastpanel" ]; then
-            log_success "FastPanel sudah terpasang di VPS ini"
+        if install_fastpanel_core; then
+            fastpanel_pass="FastPanel!$(openssl rand -hex 4 | tr '[:lower:]' '[:upper:]')"
+            if command -v mogwai >/dev/null 2>&1; then
+                mogwai chpasswd -u fastuser -p "$fastpanel_pass" >/dev/null 2>&1 || true
+            elif [ -f "/usr/local/bin/mogwai" ]; then
+                /usr/local/bin/mogwai chpasswd -u fastuser -p "$fastpanel_pass" >/dev/null 2>&1 || true
+            fi
+            if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+                ufw allow 8888/tcp comment "FastPanel GUI" >/dev/null 2>&1 || true
+            fi
+            log_success "FastPanel siap diakses pada port 8888"
         else
-            wait_for_apt_lock
-            log_info "Mengunduh & Memasang FastPanel otomatis..."
-            export DEBIAN_FRONTEND=noninteractive
-            curl -fsSL http://repo.fastpanel.direct/install_fastpanel.sh | bash -s -- -f -o </dev/null >/dev/null 2>&1 || true
+            log_warn "Instalasi FastPanel tidak berhasil, deployment MC-ExamGO akan tetap dilanjutkan..."
         fi
-        fastpanel_pass="FastPanel!$(openssl rand -hex 4 | tr '[:lower:]' '[:upper:]')"
-        if [ -f "/usr/local/bin/mogwai" ]; then
-            /usr/local/bin/mogwai chpasswd -u fastuser -p "$fastpanel_pass" >/dev/null 2>&1 || true
-        fi
-        log_success "FastPanel siap diakses pada port 8888"
     fi
 
     # Pastikan PostgreSQL Terpasang
@@ -918,22 +919,77 @@ manage_services() {
 }
 
 # ─────────────────────────────────────────────────────────────
-# Menu 5: FastPanel Web GUI Installer
+# Helper & Menu: FastPanel Web GUI Installer
 # ─────────────────────────────────────────────────────────────
+install_fastpanel_core() {
+    log_check "Memeriksa status FastPanel di VPS..."
+    if command -v mogwai >/dev/null 2>&1 || [ -f "/usr/local/fastpanel2/fastpanel" ] || [ -f "/usr/local/bin/mogwai" ]; then
+        log_success "FastPanel sudah terpasang di VPS ini"
+        return 0
+    fi
+
+    wait_for_apt_lock
+    log_info "Memeriksa dan menyiapkan paket dependensi dasar (ca-certificates, wget, curl)..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y ca-certificates wget curl >/dev/null 2>&1 || true
+
+    local installer_tmp="/tmp/install_fastpanel.sh"
+    rm -f "$installer_tmp"
+
+    log_info "Mengunduh script installer resmi FastPanel (HTTPS)..."
+    if ! curl -fsSL https://repo.fastpanel.direct/install_fastpanel.sh -o "$installer_tmp"; then
+        wget -qO "$installer_tmp" https://repo.fastpanel.direct/install_fastpanel.sh || true
+    fi
+
+    if [ ! -s "$installer_tmp" ]; then
+        log_error "Gagal mengunduh installer FastPanel dari repo.fastpanel.direct. Periksa koneksi internet VPS Anda."
+        return 1
+    fi
+
+    log_info "Menjalankan instalasi FastPanel (proses ini membutuhkan waktu 3-5 menit, harap tunggu)..."
+    # Jalankan installer resmi FastPanel unattended tanpa </dev/null agar stream script terbaca
+    if bash "$installer_tmp" -m mysql8.0; then
+        log_success "Instalasi paket FastPanel selesai!"
+    elif bash "$installer_tmp"; then
+        log_success "Instalasi paket FastPanel selesai!"
+    else
+        log_error "Instalasi FastPanel gagal dieksekusi oleh sistem."
+        rm -f "$installer_tmp"
+        return 1
+    fi
+    rm -f "$installer_tmp"
+
+    # Verifikasi apakah binary FastPanel terpasang
+    if ! command -v mogwai >/dev/null 2>&1 && [ ! -f "/usr/local/fastpanel2/fastpanel" ] && [ ! -f "/usr/local/bin/mogwai" ]; then
+        log_error "FastPanel gagal terpasang di VPS ini (binary mogwai/fastpanel tidak ditemukan)."
+        return 1
+    fi
+
+    log_success "FastPanel berhasil terpasang di VPS!"
+    return 0
+}
+
 install_fastpanel_only() {
     log_check "Memeriksa / Memasang FastPanel Web Control Panel di VPS"
-    if command -v mogwai >/dev/null 2>&1 || [ -f "/usr/local/fastpanel2/fastpanel" ]; then
-        log_success "FastPanel sudah terpasang di VPS ini"
-    else
-        wait_for_apt_lock
-        log_info "Mengunduh & Memasang FastPanel otomatis..."
-        export DEBIAN_FRONTEND=noninteractive
-        curl -fsSL http://repo.fastpanel.direct/install_fastpanel.sh | bash -s -- -f -o </dev/null >/dev/null 2>&1 || true
+    if ! install_fastpanel_core; then
+        log_error "Proses instalasi FastPanel dibatalkan karena terjadi kesalahan."
+        return 1
     fi
+
     local fastpanel_pass="FastPanel!$(openssl rand -hex 4 | tr '[:lower:]' '[:upper:]')"
-    if [ -f "/usr/local/bin/mogwai" ]; then
+    if command -v mogwai >/dev/null 2>&1; then
+        mogwai chpasswd -u fastuser -p "$fastpanel_pass" >/dev/null 2>&1 || true
+    elif [ -f "/usr/local/bin/mogwai" ]; then
         /usr/local/bin/mogwai chpasswd -u fastuser -p "$fastpanel_pass" >/dev/null 2>&1 || true
     fi
+
+    # Buka port 8888 di firewall UFW jika aktif
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow 8888/tcp comment "FastPanel GUI" >/dev/null 2>&1 || true
+        log_success "Port 8888/tcp telah diizinkan pada firewall UFW"
+    fi
+
     local server_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
     [ -z "$server_ip" ] && server_ip="127.0.0.1"
     
@@ -945,6 +1001,7 @@ install_fastpanel_only() {
     echo -e "• User Default  : ${YELLOW}fastuser${NC}"
     echo -e "• Password Baru : ${YELLOW}${fastpanel_pass}${NC}"
     echo -e "${GREEN}${BOLD}============================================================${NC}"
+    echo -e "${CYAN}Catatan:${NC} Saat login pertama kali, FastPanel akan meminta email untuk aktivasi lisensi gratis."
 }
 
 # ─────────────────────────────────────────────────────────────
