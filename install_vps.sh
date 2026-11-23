@@ -100,6 +100,91 @@ prompt_var() {
     printf -v "$var_name" '%s' "$user_ans"
 }
 
+# Deteksi Control Panel hosting (FastPanel, aaPanel, CloudPanel, dll).
+# Pada server berpanel, konfigurasi global (nginx.conf, UFW, PostgreSQL/Redis bind)
+# dikelola oleh panel sehingga TIDAK boleh diubah oleh skrip tuning.
+# Paksa tuning penuh dengan: FORCE_FULL_TUNING=1 bash install_vps.sh
+detect_panel() {
+    DETECTED_PANEL=""
+    if [ -d /usr/local/fastpanel2 ] || systemctl list-unit-files 2>/dev/null | grep -q '^fastpanel2'; then
+        DETECTED_PANEL="FastPanel"
+    elif [ -d /www/server/panel ]; then
+        DETECTED_PANEL="aaPanel/BT-Panel"
+    elif [ -d /home/clp ] || [ -d /etc/clp ]; then
+        DETECTED_PANEL="CloudPanel"
+    elif [ -d /usr/local/CyberCP ]; then
+        DETECTED_PANEL="CyberPanel"
+    elif [ -d /usr/local/hestia ]; then
+        DETECTED_PANEL="HestiaCP"
+    elif [ -d /usr/local/cpanel ]; then
+        DETECTED_PANEL="cPanel"
+    elif [ -d /usr/local/psa ]; then
+        DETECTED_PANEL="Plesk"
+    elif [ -d /usr/local/ispconfig ]; then
+        DETECTED_PANEL="ISPConfig"
+    elif [ -d /usr/local/mgr5 ]; then
+        DETECTED_PANEL="ISPmanager"
+    fi
+    if [ -n "$DETECTED_PANEL" ] && [ "${FORCE_FULL_TUNING:-0}" != "1" ]; then
+        PANEL_MODE=1
+    else
+        PANEL_MODE=0
+    fi
+}
+
+# Cadangkan file konfigurasi sebelum diubah
+backup_conf() {
+    local f="$1"
+    [ -f "$f" ] || return 0
+    local b="${f}.examgo-bak"
+    [ -f "$b" ] || cp -a "$f" "$b"
+}
+
+# Ambil URL aset rilis terbaru dari GitHub (maulanacod3/MC-ExamGo-Release)
+GITHUB_RELEASE_REPO="maulanacod3/MC-ExamGo-Release"
+fetch_github_release_url() {
+    local arch_pat="amd64|x86_64|x64"
+    case "$(uname -m)" in
+        aarch64|arm64) arch_pat="arm64|aarch64" ;;
+    esac
+    local auth=()
+    [ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    local json
+    json=$(curl -fsSL "${auth[@]}" "https://api.github.com/repos/${GITHUB_RELEASE_REPO}/releases/latest" 2>/dev/null) || return 1
+    GITHUB_RELEASE_TAG=$(echo "$json" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[^"]*"([^"]+)".*/\1/')
+    echo "$json" | grep '"browser_download_url"' | sed -E 's/.*"(https[^"]+)".*/\1/' \
+        | grep -i 'linux' | grep -iE "$arch_pat" | grep -viE '\.(sha256|sig|txt|md5)$' | head -n 1
+}
+
+# Unduh pembaruan: GitHub Release terbaru -> fallback server pusat. Output path file via stdout.
+download_latest_update() {
+    local out_dir="$1"
+    local dl_type="amd64"
+    case "$(uname -m)" in aarch64|arm64) dl_type="arm64" ;; esac
+    local url
+    url=$(fetch_github_release_url) || url=""
+    local dest="$out_dir/update_pkg"
+    if [ -n "$url" ]; then
+        log_info "Rilis GitHub terbaru: ${BOLD}${GITHUB_RELEASE_TAG:-?}${NC} → $(basename "$url")" >&2
+        local fname
+        fname=$(basename "$url")
+        dest="$out_dir/$fname"
+        if curl -fL --retry 3 -o "$dest" "$url" >&2 2>&1; then
+            echo "$dest"; return 0
+        fi
+        log_warn "Unduhan GitHub gagal, mencoba server pusat..." >&2
+    else
+        log_warn "Aset rilis GitHub tidak ditemukan, mencoba server pusat..." >&2
+    fi
+    dest="$out_dir/mc-exam-go-release.zip"
+    if curl -fL --retry 3 -o "$dest" "https://mcode.web.id/examgo/unduh/${dl_type}" >&2 2>&1; then
+        echo "$dest"; return 0
+    fi
+    return 1
+}
+
+detect_panel
+
 if [ -n "${BASH_SOURCE[0]:-}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 else
@@ -342,7 +427,11 @@ EOF_SYSCTL
     log_success "Kernel TCP Socket & Buffer Queue dioptimalkan (/etc/sysctl.d/99-examgo.conf)"
 
     # 3. Konfigurasi Nginx Global (Concurrency + Image Load/Upload Performance)
-    if [ -f /etc/nginx/nginx.conf ]; then
+    if [ "${PANEL_MODE:-0}" = "1" ]; then
+        log_warn "Terdeteksi ${DETECTED_PANEL}: konfigurasi Nginx global dilewati (dikelola panel)."
+        log_info "Upload besar sudah ditangani di vhost aplikasi (client_max_body_size). Jika perlu, atur dari menu Nginx di ${DETECTED_PANEL}."
+    elif [ -f /etc/nginx/nginx.conf ]; then
+        backup_conf /etc/nginx/nginx.conf
         log_check "Mengonfigurasi Nginx Core & Media Delivery Engine..."
 
         # 3.1 Worker Configuration
@@ -400,7 +489,15 @@ EOF_TUNING
             systemctl reload nginx 2>/dev/null || true
             log_success "Nginx worker_connections disetel ke ${GREEN}${worker_conn}${NC} (Nginx Reload Sukses)"
         else
-            log_warn "Peringatan sintaks Nginx. Silakan periksa 'nginx -t'."
+            log_warn "Sintaks Nginx tidak valid setelah tuning. Melakukan ROLLBACK otomatis..."
+            [ -f /etc/nginx/nginx.conf.examgo-bak ] && cp -af /etc/nginx/nginx.conf.examgo-bak /etc/nginx/nginx.conf
+            rm -f /etc/nginx/conf.d/99-examgo-tuning.conf
+            if nginx -t >/dev/null 2>&1; then
+                systemctl reload nginx 2>/dev/null || true
+                log_success "Konfigurasi Nginx dipulihkan ke kondisi semula"
+            else
+                log_error "Nginx masih error, periksa manual: nginx -t"
+            fi
         fi
     else
         log_info "Nginx belum terpasang, konfigurasi kernel dan OS limits telah aktif."
@@ -415,8 +512,12 @@ EOF_TUNING
     echo -e "• Kapasitas konkurensi     : ${GREEN}${profile}${NC}"
     echo -e "${GREEN}${BOLD}========================================================================${NC}"
 
-    # Jalankan Security Hardening secara otomatis
-    harden_vps_security
+    # Jalankan Security Hardening (dilewati di server berpanel agar tidak merusak panel)
+    if [ "${PANEL_MODE:-0}" = "1" ]; then
+        log_warn "Terdeteksi ${DETECTED_PANEL}: Security Hardening (UFW/PostgreSQL/Redis) dilewati. Kelola firewall dari panel."
+    else
+        harden_vps_security
+    fi
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -1113,9 +1214,32 @@ update_instance() {
     local target_svc="${svc_list[$((choice - 1))]}"
     local target_dir="/opt/$target_svc"
 
-    # Cari file binary pembaruan di folder lokal
+    # Sumber pembaruan: GitHub Release (otomatis) atau berkas lokal
     local update_file=""
-    if [ -f "./mc-exam-go-linux-amd64" ]; then
+    local dl_dir=""
+    echo ""
+    echo -e "${BOLD}Sumber Pembaruan:${NC}"
+    echo -e "  ${CYAN}[1]${NC} Unduh rilis terbaru dari GitHub (otomatis, Rekomendasi)"
+    echo -e "  ${CYAN}[2]${NC} Gunakan berkas lokal di VPS"
+    local src_choice=""
+    prompt_var "Pilih sumber [1/2] (default 1): " src_choice "1"
+    if [ "$src_choice" = "1" ]; then
+        dl_dir="/tmp/mc_dl_$$"
+        mkdir -p "$dl_dir"
+        log_check "Mengunduh rilis terbaru dari GitHub (${GITHUB_RELEASE_REPO})"
+        update_file=$(download_latest_update "$dl_dir") || update_file=""
+        if [ -z "$update_file" ] || [ ! -s "$update_file" ]; then
+            log_error "Gagal mengunduh pembaruan otomatis. Gunakan opsi berkas lokal."
+            rm -rf "$dl_dir"
+            update_file=""
+        else
+            log_success "Pembaruan terunduh: $(basename "$update_file")"
+        fi
+    fi
+
+    if [ -n "$update_file" ]; then
+        :
+    elif [ -f "./mc-exam-go-linux-amd64" ]; then
         update_file="./mc-exam-go-linux-amd64"
     elif ls ./mc-exam-go-linux-* >/dev/null 2>&1; then
         update_file=$(ls ./mc-exam-go-linux-* | head -n 1)
