@@ -153,7 +153,7 @@ fetch_github_release_url() {
     json=$(curl -fsSL "${auth[@]}" "https://api.github.com/repos/${GITHUB_RELEASE_REPO}/releases/latest" 2>/dev/null) || return 1
     GITHUB_RELEASE_TAG=$(echo "$json" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[^"]*"([^"]+)".*/\1/')
     echo "$json" | grep '"browser_download_url"' | sed -E 's/.*"(https[^"]+)".*/\1/' \
-        | grep -i 'linux' | grep -iE "$arch_pat" | grep -viE '\.(sha256|sig|txt|md5)$' | head -n 1
+        | grep -iE "/MC-ExamGo-(${arch_pat})-[^/]*\.zip$" | head -n 1
 }
 
 # Unduh pembaruan: GitHub Release terbaru -> fallback server pusat. Output path file via stdout.
